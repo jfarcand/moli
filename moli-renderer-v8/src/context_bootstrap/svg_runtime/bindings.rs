@@ -1145,7 +1145,7 @@ struct SvgAnimatedNumberTemplateAccessorsDeclaration {
 }
 
 #[derive(WebApiFunctionTemplate)]
-#[webapi(interface = web_api_interfaces::SVGAnimatedInteger, enumerable)]
+#[webapi(interface = web_api_interfaces::SVGAnimatedInteger, enumerable, receiver)]
 struct SvgAnimatedIntegerTemplateAccessorsDeclaration {
     #[webapi(
         accessor_property = "baseVal",
@@ -1836,7 +1836,7 @@ struct SvgFeCompositeElementPrototypeAccessorsDeclaration {
 }
 
 #[derive(WebApiFunctionTemplate)]
-#[webapi(interface = web_api_interfaces::SVGFEConvolveMatrixElement, enumerable)]
+#[webapi(interface = web_api_interfaces::SVGFEConvolveMatrixElement, enumerable, receiver)]
 struct SvgFeConvolveMatrixElementPrototypeAccessorsDeclaration {
     #[webapi(
         accessor_property = "orderX",
@@ -1910,7 +1910,7 @@ struct SvgFeMorphologyElementPrototypeAccessorsDeclaration {
 }
 
 #[derive(WebApiFunctionTemplate)]
-#[webapi(interface = web_api_interfaces::SVGFETurbulenceElement, enumerable)]
+#[webapi(interface = web_api_interfaces::SVGFETurbulenceElement, enumerable, receiver)]
 struct SvgFeTurbulenceElementPrototypeAccessorsDeclaration {
     #[webapi(
         accessor_property = "numOctaves",
