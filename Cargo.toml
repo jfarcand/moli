@@ -92,7 +92,7 @@ members = [
     "moli-http-cache",
     "moli-wpt-compat"
 ]
-exclude = ["vendor/xml5ever-0.39.0", "vendor/web-audio-api-1.7.0"]
+exclude = ["vendor/xml5ever-0.39.0", "vendor/web-audio-api-1.7.0", "vendor/usvg-0.48.1"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -100,6 +100,7 @@ license = "MIT OR Apache-2.0"
 [patch.crates-io]
 parley = { git = "https://github.com/lexmount/parley", rev = "d0f5452487b872562102fde2c133d445272bcccc" }
 fontique = { git = "https://github.com/lexmount/parley", rev = "d0f5452487b872562102fde2c133d445272bcccc" }
+usvg = { path = "vendor/usvg-0.48.1" }
 web-audio-api = { path = "vendor/web-audio-api-1.7.0" }
 xml5ever = { path = "vendor/xml5ever-0.39.0" }
 curl = { git = "https://github.com/lexmount/curl-rust", rev = "a0ea59f5ca1b1e4bc8627a28c29463ac96aeb758" }
