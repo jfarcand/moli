@@ -145,7 +145,11 @@ fn event_subclass_constructor_callback<'s>(
                 return;
             }
         }
-        EventSubclassKind::InputEvent => data::initialize_input_event(scope, event, init),
+        EventSubclassKind::InputEvent => {
+            if !data::initialize_input_event(scope, event, init) {
+                return;
+            }
+        }
         EventSubclassKind::WheelEvent => {
             if !pointer::initialize_wheel_event(scope, event, init) {
                 return;
