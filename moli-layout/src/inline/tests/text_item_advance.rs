@@ -187,6 +187,8 @@ fn text_item_quantization_allocates_inline_boxes_between_shaped_items() {
             width: 5.25,
             height: 10.0,
             kind: InlineBoxKind::InFlow,
+            baseline: None,
+            vertical_align: parley::VerticalAlign::default(),
         }],
         0.0,
     );

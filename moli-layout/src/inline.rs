@@ -1576,7 +1576,11 @@ fn glyph_line_bounds(
     include_used_font_metrics: bool,
 ) -> InlineVerticalBounds {
     let used_strut = inline_strut_metrics(
-        InlineFontMetrics::from_font_metrics(used_font, used_line_height, include_used_font_metrics),
+        InlineFontMetrics::from_font_metrics(
+            used_font,
+            used_line_height,
+            include_used_font_metrics,
+        ),
         true,
     );
     let used_bounds = InlineVerticalBounds::from_strut(used_strut);

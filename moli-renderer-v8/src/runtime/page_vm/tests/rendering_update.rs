@@ -1,8 +1,8 @@
 use super::*;
 
-mod planar_transforms;
 mod image_dimensions;
 mod inline_svg_styles;
+mod planar_transforms;
 mod print;
 mod svg_text_metrics;
 mod transform_precision;

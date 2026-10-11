@@ -54,7 +54,7 @@ where
         ),
     ) -> Result<(), LayoutError> {
         let label = self.source.label(owner);
-        let content_style = fallback.container.as_ref().unwrap_or(host_style);
+        let content_style = fallback.container.as_deref().unwrap_or(host_style);
         let mut content = Vec::new();
         if fallback.show_icon {
             let mut style =
@@ -116,7 +116,7 @@ where
                 None,
                 Some(LayoutAnonymousReason::ImageFallbackContent),
                 LayoutBoxKind::AnonymousBlock,
-                style.clone(),
+                (*style).clone(),
                 None,
             ));
             self.attach_children(world, container, owner, &style, content, false)?;
