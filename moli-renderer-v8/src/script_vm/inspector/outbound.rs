@@ -213,10 +213,6 @@ impl InspectorOutbound {
                     preface,
                     command_output,
                 } => return self.publish_pause_value(preface, command_output, Some(value)),
-                RendererInspectorPauseNotificationRoute::PublishPreface {
-                    preface,
-                    command_output,
-                } => return self.publish_pause_value(preface, command_output, None),
                 RendererInspectorPauseNotificationRoute::Drop => return,
             }
         }
@@ -297,6 +293,19 @@ impl InspectorOutbound {
             .borrow()
             .as_ref()
             .and_then(|route| route.stage_pause_preface(messages))
+    }
+
+    pub(super) fn publish_unclaimed_pause_preface(
+        &self,
+        preface: Option<RendererInspectorPausePrefaceGuard>,
+    ) {
+        // DOM path/removal bookkeeping has already committed these changes.
+        // If V8 skips the pause, publish them without waiting for an event
+        // that will never arrive.
+        if let Some(messages) = preface.and_then(RendererInspectorPausePrefaceGuard::take_unclaimed)
+        {
+            self.publish_pause_value(messages, None, None);
+        }
     }
 
     fn push_local_value(&self, value: Value) {
@@ -895,8 +904,8 @@ mod tests {
     }
 
     #[test]
-    fn replacement_suppresses_pause_events_but_preserves_dom_and_command_prefixes() {
-        let (outbound, bridge, journal) = routed_outbound();
+    fn skipped_pause_preserves_dom_and_command_prefixes() {
+        let (outbound, _bridge, journal) = routed_outbound();
         let (transport, mut output_rx) = crate::runtime::renderer_output_transport_channel();
         journal.bind_transport(transport);
         output_rx.try_recv().expect("stream opened");
@@ -909,13 +918,9 @@ mod tests {
             "method": "DOM.setChildNodes", "params": {"parentId": 1, "nodes": []}
         });
         outbound.push_value(console.clone());
-        let _preface = outbound
+        let preface = outbound
             .stage_pause_preface(vec![RendererRuntimeInspectorMessage::protocol(dom.clone())]);
-        assert!(bridge.begin_document_replacement());
-        outbound.push_value(serde_json::json!({
-            "method": "Debugger.paused", "params": {"reason": "DOM", "callFrames": []}
-        }));
-        assert!(bridge.enter_pause().is_some());
+        outbound.publish_unclaimed_pause_preface(preface);
         let crate::runtime::RendererOutputTransportMessage::Publication(publication) = output_rx
             .try_recv()
             .expect("the real prefix must be published")
@@ -935,9 +940,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(messages, vec![console, dom]);
 
-        bridge.leave_pause();
-        bridge.finish_document_replacement();
-        outbound.push_value(serde_json::json!({"method": "Debugger.resumed", "params": {}}));
         outbound.end_command_turn_output(&recorder);
         assert!(recorder.finish().is_empty());
         assert!(outbound.take_pending_messages().is_empty());

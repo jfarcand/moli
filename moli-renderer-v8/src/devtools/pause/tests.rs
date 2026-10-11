@@ -386,7 +386,7 @@ fn resumed_after_pause_loop_exit_stays_on_pause_bridge() {
 }
 
 #[test]
-fn document_replacement_hides_repeated_pauses_without_losing_the_original_resume() {
+fn document_replacement_preserves_the_original_resume_for_every_session() {
     let bridge = RendererInspectorPauseBridge::default();
     configure_page(&bridge, PageId::new_for_testing(1));
     let first = outbound_route(&bridge);
@@ -402,39 +402,23 @@ fn document_replacement_hides_repeated_pauses_without_losing_the_original_resume
         expect_immediate_preface(route.route_notification(&paused));
     }
     assert!(bridge.enter_pause().is_some());
-    assert!(bridge.begin_document_replacement());
+    let agent = routes[0].agent_token;
+    assert!(bridge.begin_document_replacement(agent));
+    assert_eq!(
+        bridge.wait_for_pause_work(agent, || Some(())),
+        Err(RendererInspectorPauseExitReason::DocumentReplacement)
+    );
     bridge.leave_pause();
     for route in &routes {
         expect_immediate_preface(route.route_notification(&resumed));
     }
 
-    for _ in 0..2 {
-        for route in &routes {
-            assert_eq!(
-                route.route_notification(&paused),
-                RendererInspectorPauseNotificationRoute::Drop
-            );
-        }
-        assert!(bridge.enter_pause().is_some());
-        assert_eq!(
-            bridge.wait_for_pause_work(|| Some(())),
-            Err(RendererInspectorPauseExitReason::DocumentReplacement)
-        );
-        bridge.leave_pause();
-        for route in &routes {
-            assert_eq!(
-                route.route_notification(&resumed),
-                RendererInspectorPauseNotificationRoute::Drop
-            );
-        }
-    }
-
-    bridge.finish_document_replacement();
+    bridge.finish_document_replacement(agent);
     for route in &routes {
         expect_immediate_preface(route.route_notification(&paused));
     }
     assert!(bridge.enter_pause().is_some());
-    assert_eq!(bridge.wait_for_pause_work(|| Some(())), Ok(()));
+    assert_eq!(bridge.wait_for_pause_work(agent, || Some(())), Ok(()));
 }
 
 #[test]
