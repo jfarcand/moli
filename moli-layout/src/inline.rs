@@ -157,6 +157,8 @@ pub(crate) struct InlineEdgeContribution {
 pub(crate) struct InlineStructuralBox {
     pub(crate) box_id: LayoutBoxId,
     pub(crate) parent: LayoutBoxId,
+    parent_index: Option<usize>,
+    depth: usize,
     pub(crate) vertical_align: InlineVerticalAlign,
     pub(crate) strut: Option<InlineStrutMetrics>,
     pub(crate) include_used_font_metrics: bool,
@@ -201,6 +203,7 @@ pub(crate) struct InlineFormattingContext {
     /// boundary even when their paint/font properties are otherwise equal.
     pub(crate) style_parents: Vec<LayoutBoxId>,
     pub(crate) structural_boxes: Vec<InlineStructuralBox>,
+    pub(crate) structural_box_indices: HashMap<LayoutBoxId, usize>,
     pub(crate) line_placements: Vec<InlineLinePlacement>,
     pub(crate) fragments: InlineFragments,
 }
@@ -485,9 +488,9 @@ impl InlineFormattingContext {
     }
 
     fn structural_box(&self, id: LayoutBoxId) -> Option<&InlineStructuralBox> {
-        self.structural_boxes
-            .iter()
-            .find(|state| state.box_id == id)
+        self.structural_box_indices
+            .get(&id)
+            .map(|&index| &self.structural_boxes[index])
     }
 }
 
@@ -1032,6 +1035,9 @@ fn resolve_inline_lines(
     let mut result = InlineLineMetrics::default();
     let mut preceding_adjustment = 0.0;
     let mut unadjusted_line_top = 0.0;
+    // The hierarchy is immutable across probes. Reuse dense line-local marks
+    // and state indices instead of allocating tree sets/maps for every line.
+    let mut box_scratch = LineInlineBoxScratch::new(context.structural_boxes.len());
 
     for (line_index, line) in layout.lines().enumerate() {
         let metrics = line.metrics();
@@ -1142,17 +1148,14 @@ fn resolve_inline_lines(
             line.text_range(),
             &geometries,
             line_break.map(|(box_id, _)| box_id),
+            &mut box_scratch,
         );
-        let mut state_indices = BTreeMap::new();
-        for (index, state) in states.iter().enumerate() {
-            state_indices.insert(state.box_id.index(), index);
-        }
         let phantom = css_line_is_phantom(
             line.break_reason(),
             geometries.iter().any(|geometry| geometry.creates_line),
         );
         for state in &mut states {
-            state.parent = state_indices.get(&state.parent_box.index()).copied();
+            state.parent = box_scratch.state_index(context, state.parent_box);
             state.alignment.anchor = state
                 .parent
                 .map_or(LineVerticalAnchor::Root, LineVerticalAnchor::State);
@@ -1161,15 +1164,13 @@ fn resolve_inline_lines(
             let box_id = geometry
                 .edge(context)
                 .map_or(geometry.structural_parent, |object| object.box_id);
-            geometry.anchor = state_indices
-                .get(&box_id.index())
-                .copied()
+            geometry.anchor = box_scratch
+                .state_index(context, box_id)
                 .map_or(LineVerticalAnchor::Root, LineVerticalAnchor::State);
         }
         let line_break = line_break.map(|(box_id, bounds)| {
-            let anchor = state_indices
-                .get(&box_id.index())
-                .copied()
+            let anchor = box_scratch
+                .state_index(context, box_id)
                 .map_or(LineVerticalAnchor::Root, LineVerticalAnchor::State);
             (anchor, bounds)
         });
@@ -1604,30 +1605,59 @@ fn glyph_line_bounds(
     bounds
 }
 
+struct LineInlineBoxScratch {
+    present: Vec<bool>,
+    strut_boxes: Vec<bool>,
+    state_indices: Vec<Option<usize>>,
+}
+
+impl LineInlineBoxScratch {
+    fn new(count: usize) -> Self {
+        Self {
+            present: vec![false; count],
+            strut_boxes: vec![false; count],
+            state_indices: vec![None; count],
+        }
+    }
+
+    fn state_index(&self, context: &InlineFormattingContext, box_id: LayoutBoxId) -> Option<usize> {
+        context
+            .structural_box_indices
+            .get(&box_id)
+            .and_then(|&index| self.state_indices[index])
+    }
+}
+
 fn build_line_inline_box_states(
     context: &InlineFormattingContext,
     layout: &Layout<TextBrush>,
     line_range: Range<usize>,
     geometries: &[InlineItemVerticalGeometry],
     line_break_box: Option<LayoutBoxId>,
+    scratch: &mut LineInlineBoxScratch,
 ) -> Vec<LineInlineBoxState> {
-    let mut present = std::collections::BTreeSet::new();
-    let mut strut_boxes = std::collections::BTreeSet::new();
+    scratch.present.fill(false);
+    scratch.strut_boxes.fill(false);
+    scratch.state_indices.fill(None);
     for unit in overlapping_output_ranges(&context.text_units, &line_range) {
         for ancestor in &unit.ancestors {
-            mark_structural_path(context, *ancestor, &mut present);
+            mark_structural_path(context, *ancestor, &mut scratch.present);
             if !unit.control {
-                mark_structural_path(context, *ancestor, &mut strut_boxes);
+                mark_structural_path(context, *ancestor, &mut scratch.strut_boxes);
             }
         }
     }
     for geometry in geometries {
-        mark_structural_path(context, geometry.structural_parent, &mut present);
+        mark_structural_path(context, geometry.structural_parent, &mut scratch.present);
         if geometry.contributes_to_line {
-            mark_structural_path(context, geometry.structural_parent, &mut strut_boxes);
+            mark_structural_path(
+                context,
+                geometry.structural_parent,
+                &mut scratch.strut_boxes,
+            );
         }
         if let Some(object) = geometry.edge(context) {
-            mark_structural_path(context, object.box_id, &mut present);
+            mark_structural_path(context, object.box_id, &mut scratch.present);
             // A zero-size closing edge still retains its standards strut.
             // Parley can carry a close after a collapsed trailing space onto
             // the next line; that close belongs to the preceding fragment.
@@ -1653,62 +1683,88 @@ fn build_line_inline_box_states(
                 || (!context.uses_quirks_line_height
                     && (geometry.creates_line || !follows_wrapped_space()))
             {
-                mark_structural_path(context, object.box_id, &mut strut_boxes);
+                mark_structural_path(context, object.box_id, &mut scratch.strut_boxes);
             }
         }
     }
     if let Some(box_id) = line_break_box {
-        mark_structural_path(context, box_id, &mut present);
+        mark_structural_path(context, box_id, &mut scratch.present);
     }
 
-    context
-        .structural_boxes
-        .iter()
-        .filter(|state| present.contains(&state.box_id.index()))
-        .map(|state| LineInlineBoxState {
+    let mut states = Vec::new();
+    for (index, state) in context.structural_boxes.iter().enumerate() {
+        if !scratch.present[index] {
+            continue;
+        }
+        scratch.state_indices[index] = Some(states.len());
+        states.push(LineInlineBoxState {
             box_id: state.box_id,
             parent_box: state.parent,
             parent: None,
-            depth: structural_box_depth(context, state.box_id),
+            depth: state.depth,
             vertical_align: state.vertical_align,
             strut: state.strut,
-            has_strut_content: strut_boxes.contains(&state.box_id.index()),
+            has_strut_content: scratch.strut_boxes[index],
             line_contribution: None,
             alignment: InlineBoxAlignment {
                 anchor: LineVerticalAnchor::Root,
                 relative_offset: 0.0,
                 global_offset: 0.0,
             },
-        })
-        .collect()
+        });
+    }
+    states
 }
 
 fn mark_structural_path(
     context: &InlineFormattingContext,
-    mut box_id: LayoutBoxId,
-    present: &mut std::collections::BTreeSet<usize>,
+    box_id: LayoutBoxId,
+    present: &mut [bool],
 ) {
-    while box_id != context.root_style {
-        let Some(state) = context.structural_box(box_id) else {
-            break;
-        };
-        if !present.insert(box_id.index()) {
+    if box_id == context.root_style {
+        return;
+    }
+    let mut current = context.structural_box_indices.get(&box_id).copied();
+    while let Some(index) = current {
+        if std::mem::replace(&mut present[index], true) {
             break;
         }
-        box_id = state.parent;
+        current = context.structural_boxes[index].parent_index;
     }
 }
 
-fn structural_box_depth(context: &InlineFormattingContext, mut box_id: LayoutBoxId) -> usize {
-    let mut depth = 0;
-    while box_id != context.root_style {
-        let Some(state) = context.structural_box(box_id) else {
-            break;
-        };
-        depth += 1;
-        box_id = state.parent;
+fn resolve_structural_box_hierarchy(
+    boxes: &mut [InlineStructuralBox],
+    indices: &HashMap<LayoutBoxId, usize>,
+    root: LayoutBoxId,
+) {
+    for state in boxes.iter_mut() {
+        state.parent_index = (state.parent != root)
+            .then(|| indices.get(&state.parent).copied())
+            .flatten();
     }
-    depth
+    // Resolve each parent chain once, without assuming allocation or visual
+    // item order is a preorder of the structural hierarchy.
+    let mut path = Vec::new();
+    for index in 0..boxes.len() {
+        let mut current = Some(index);
+        while let Some(index) = current {
+            if boxes[index].depth != 0 || boxes[index].box_id == root {
+                break;
+            }
+            path.push(index);
+            assert!(
+                path.len() <= boxes.len(),
+                "inline structural parents must be acyclic"
+            );
+            current = boxes[index].parent_index;
+        }
+        let mut depth = current.map_or(0, |index| boxes[index].depth);
+        for index in path.drain(..).rev() {
+            depth += 1;
+            boxes[index].depth = depth;
+        }
+    }
 }
 
 fn alignment_reference(
@@ -2174,19 +2230,21 @@ impl InlineBuildInput {
             .collect();
         let parent_strut = measure_inline_strut(parley, root_text_style.clone(), quantize);
         let mut structural_boxes = Vec::new();
+        let mut structural_box_indices = HashMap::new();
         for (_, object, _) in &self.objects {
             if object.role != InlineObjectRole::StartEdge
-                || structural_boxes
-                    .iter()
-                    .any(|state: &InlineStructuralBox| state.box_id == object.box_id)
+                || structural_box_indices.contains_key(&object.box_id)
             {
                 continue;
             }
             let mut style = world.boxes[object.box_id.index()].style.parley_text_style();
             parley.resolve_font_families(&mut style, None);
+            structural_box_indices.insert(object.box_id, structural_boxes.len());
             structural_boxes.push(InlineStructuralBox {
                 box_id: object.box_id,
                 parent: object.ancestors.last().copied().unwrap_or(self.root_style),
+                parent_index: None,
+                depth: 0,
                 vertical_align: object.vertical_align,
                 strut: measure_inline_strut(parley, style, quantize),
                 include_used_font_metrics: world.boxes[object.box_id.index()]
@@ -2194,6 +2252,11 @@ impl InlineBuildInput {
                     .includes_used_font_metrics(),
             });
         }
+        resolve_structural_box_hierarchy(
+            &mut structural_boxes,
+            &structural_box_indices,
+            self.root_style,
+        );
         let objects = self
             .objects
             .drain(..)
@@ -2216,6 +2279,7 @@ impl InlineBuildInput {
                 .includes_used_font_metrics(),
             style_parents,
             structural_boxes,
+            structural_box_indices,
             line_placements: Vec::new(),
             fragments: InlineFragments::default(),
         }
@@ -2908,6 +2972,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn indexed_inline_hierarchy_preserves_order_and_resets_line_membership() {
+        let id = LayoutBoxId::from_index;
+        let root = id(0);
+        // Deliberately put descendants before parents and leave one parent
+        // outside the IFC hierarchy, as a flattened structural boundary can.
+        let mut structural_boxes = [(30, 20), (40, 10), (10, 0), (20, 10), (60, 99)]
+            .into_iter()
+            .map(|(box_id, parent)| InlineStructuralBox {
+                box_id: id(box_id),
+                parent: id(parent),
+                parent_index: None,
+                depth: 0,
+                vertical_align: InlineVerticalAlign::default(),
+                strut: None,
+                include_used_font_metrics: false,
+            })
+            .collect::<Vec<_>>();
+        let structural_box_indices = structural_boxes
+            .iter()
+            .enumerate()
+            .map(|(index, state)| (state.box_id, index))
+            .collect();
+        resolve_structural_box_hierarchy(&mut structural_boxes, &structural_box_indices, root);
+        assert_eq!(
+            structural_boxes
+                .iter()
+                .map(|state| state.depth)
+                .collect::<Vec<_>>(),
+            [3, 2, 1, 2, 1],
+        );
+        let unit = |output_range, ancestors: &[usize], control| InlineTextUnit {
+            output_range,
+            style_box: root,
+            ancestors: ancestors.iter().copied().map(id).collect(),
+            sources: Vec::new(),
+            control,
+            collapsible_whitespace: false,
+            break_spaces_opportunity: false,
+        };
+        let context = InlineFormattingContext {
+            root_style: root,
+            measurement_layout: None,
+            laid_out: None,
+            content_widths: InlineContentWidthsMemo::default(),
+            text_units: vec![
+                unit(0..1, &[0, 10, 20, 30], false),
+                unit(1..2, &[0, 10, 40], true),
+                unit(2..3, &[0, 60], false),
+            ],
+            source_map: Vec::new(),
+            selection: None,
+            objects: Vec::new(),
+            font_metrics: Vec::new(),
+            parent_strut: None,
+            uses_quirks_line_height: false,
+            root_includes_used_font_metrics: false,
+            style_parents: vec![id(30)],
+            structural_boxes,
+            structural_box_indices,
+            line_placements: Vec::new(),
+            fragments: InlineFragments::default(),
+        };
+        assert!(context.style_is_within_box(0, id(10)));
+        assert!(context.style_is_within_box(0, root));
+        assert!(!context.style_is_within_box(0, id(40)));
+        let layout = Layout::new();
+        let mut scratch = LineInlineBoxScratch::new(context.structural_boxes.len());
+        let signature = |states: &[LineInlineBoxState]| {
+            states
+                .iter()
+                .map(|state| (state.box_id.index(), state.depth, state.has_strut_content))
+                .collect::<Vec<_>>()
+        };
+
+        let first = build_line_inline_box_states(&context, &layout, 0..1, &[], None, &mut scratch);
+        assert_eq!(
+            signature(&first),
+            [(30, 3, true), (10, 1, true), (20, 2, true)]
+        );
+        assert_eq!(scratch.state_index(&context, id(30)), Some(0));
+        assert_eq!(scratch.state_index(&context, id(10)), Some(1));
+        assert_eq!(scratch.state_index(&context, id(20)), Some(2));
+
+        let second = build_line_inline_box_states(&context, &layout, 1..2, &[], None, &mut scratch);
+        assert_eq!(signature(&second), [(40, 2, false), (10, 1, false)]);
+        assert_eq!(scratch.state_index(&context, id(30)), None);
+        assert_eq!(scratch.state_index(&context, id(20)), None);
+        assert_eq!(scratch.state_index(&context, id(40)), Some(0));
+
+        let third =
+            build_line_inline_box_states(&context, &layout, 2..3, &[], Some(id(30)), &mut scratch);
+        assert_eq!(
+            signature(&third),
+            [
+                (30, 3, false),
+                (10, 1, false),
+                (20, 2, false),
+                (60, 1, true)
+            ]
+        );
+        assert_eq!(scratch.state_index(&context, id(40)), None);
+        assert_eq!(scratch.state_index(&context, id(99)), None);
+        assert_eq!(scratch.state_index(&context, root), None);
+    }
+
+    #[test]
     fn ordered_output_range_lookup_handles_duplicates_gaps_and_bidi_order() {
         let source = |output_range: Range<usize>| InlineSourceMapEntry {
             output_range,
@@ -3381,6 +3551,7 @@ mod tests {
             root_includes_used_font_metrics: false,
             style_parents: vec![root],
             structural_boxes: Vec::new(),
+            structural_box_indices: HashMap::new(),
             line_placements: Vec::new(),
             fragments: InlineFragments::default(),
         };
@@ -3495,6 +3666,7 @@ mod tests {
                     root_includes_used_font_metrics: false,
                     style_parents: Vec::new(),
                     structural_boxes: Vec::new(),
+                    structural_box_indices: HashMap::new(),
                     line_placements: Vec::new(),
                     fragments: InlineFragments::default(),
                 };

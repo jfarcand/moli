@@ -3129,6 +3129,7 @@ fn empty_inline_context() -> InlineFormattingContext {
         root_includes_used_font_metrics: false,
         style_parents: Vec::new(),
         structural_boxes: Vec::new(),
+        structural_box_indices: std::collections::HashMap::new(),
         line_placements: Vec::new(),
         fragments: InlineFragments::default(),
     }
