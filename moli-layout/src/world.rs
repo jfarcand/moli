@@ -918,6 +918,13 @@ where
             stack.extend(self.boxes[id.index()].children.iter().copied());
         }
 
+        if reachable.iter().all(|&is_reachable| is_reachable) {
+            self.display_contents_mapping
+                .retain(|_, ids| !ids.is_empty());
+            self.boxes.shrink_to_fit();
+            return;
+        }
+
         let mut remap = vec![None; self.boxes.len()];
         let mut next_index = 0;
         for (index, is_reachable) in reachable.iter().copied().enumerate() {
@@ -927,23 +934,32 @@ where
             }
         }
 
-        let mut compacted = Vec::with_capacity(next_index);
-        for (index, mut layout_box) in self.boxes.drain(..).enumerate() {
-            if !reachable[index] {
-                continue;
+        // LayoutBox is large: draining by value and pushing into a second
+        // Vec copies every retained record several times. Retain in place so
+        // only records following a removed slot need to move, once each.
+        let mut index = 0;
+        self.boxes.retain_mut(|layout_box| {
+            let keep = reachable[index];
+            index += 1;
+            if !keep {
+                return false;
             }
             layout_box.structural_parent = layout_box
                 .structural_parent
                 .and_then(|parent| remap[parent.index()]);
             layout_box.parent = layout_box.parent.and_then(|parent| remap[parent.index()]);
-            layout_box.children = layout_box
-                .children
-                .into_iter()
-                .filter_map(|child| remap[child.index()])
-                .collect();
-            compacted.push(layout_box);
-        }
-        self.boxes = compacted;
+            layout_box.children.retain_mut(|child| {
+                let Some(remapped) = remap[child.index()] else {
+                    return false;
+                };
+                *child = remapped;
+                true
+            });
+            true
+        });
+        // Preserve the old compact Vec's capacity bound rather than retaining
+        // unused slots for multi-kilobyte boxes throughout inline preparation.
+        self.boxes.shrink_to_fit();
         self.root = remap[self.root.index()].expect("the layout root is always reachable");
         self.source_mapping.retain(|_, id| {
             let Some(remapped) = remap[id.index()] else {
@@ -953,7 +969,13 @@ where
             true
         });
         self.display_contents_mapping.retain(|_, ids| {
-            *ids = ids.iter().filter_map(|id| remap[id.index()]).collect();
+            ids.retain_mut(|id| {
+                let Some(remapped) = remap[id.index()] else {
+                    return false;
+                };
+                *id = remapped;
+                true
+            });
             !ids.is_empty()
         });
     }
@@ -1338,5 +1360,118 @@ fn push_diagnostic(
 ) {
     if !diagnostics.contains(&diagnostic) {
         diagnostics.push(diagnostic);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LayoutDisplay;
+
+    fn detached_boxes(count: usize) -> LayoutWorld<usize> {
+        let block = |source| {
+            LayoutWorld::new_box(
+                Some(source),
+                None,
+                None,
+                format!("block-{source}"),
+                None,
+                None,
+                None,
+                LayoutBoxKind::PrincipalBlock,
+                ResolvedLayoutStyle::synthetic(
+                    LayoutDisplay::Block,
+                    Style::default(),
+                    crate::PaintColor::TRANSPARENT,
+                ),
+                None,
+            )
+        };
+        let mut world = LayoutWorld::new(block(0), false);
+        world.map_source(0, world.root());
+        for source in 1..count {
+            let id = world.allocate(block(source));
+            world.map_source(source, id);
+        }
+        world
+    }
+
+    #[test]
+    fn compaction_preserves_child_storage_and_remaps_root_and_source_ownership() {
+        let id = LayoutBoxId::from_index;
+        let mut world = detached_boxes(7);
+        world.root = id(3);
+        world.replace_children(id(3), vec![id(5), id(2)]).unwrap();
+        world.replace_children(id(5), vec![id(6)]).unwrap();
+        // Structural ownership can differ from formatting ownership after
+        // normalization. Both graphs must survive the dense ID remap.
+        world.boxes[2].structural_parent = Some(id(5));
+        world.boxes[6].structural_parent = Some(id(3));
+        world.map_display_contents_source(100, &[id(1), id(6), id(2), id(4)]);
+        world.map_display_contents_source(101, &[id(0), id(4)]);
+        world.map_display_contents_source(102, &[]);
+        let root_children = world.boxes[3].children.as_ptr();
+        let branch_children = world.boxes[5].children.as_ptr();
+
+        world.compact_reachable();
+
+        assert_eq!(world.len(), 4);
+        assert_eq!(world.root(), id(1));
+        assert_eq!(
+            world
+                .boxes
+                .iter()
+                .map(|layout_box| layout_box.source)
+                .collect::<Vec<_>>(),
+            [Some(2), Some(3), Some(5), Some(6)],
+        );
+        assert_eq!(world.boxes[1].children, [id(2), id(0)]);
+        assert_eq!(world.boxes[2].children, [id(3)]);
+        assert_eq!(world.boxes[1].children.as_ptr(), root_children);
+        assert_eq!(world.boxes[2].children.as_ptr(), branch_children);
+        assert_eq!(world.boxes[0].parent, Some(id(1)));
+        assert_eq!(world.boxes[0].structural_parent, Some(id(2)));
+        assert_eq!(world.boxes[3].parent, Some(id(2)));
+        assert_eq!(world.boxes[3].structural_parent, Some(id(1)));
+        for (source, index) in [(2, 0), (3, 1), (5, 2), (6, 3)] {
+            assert_eq!(world.source_box(source), Some(id(index)));
+        }
+        for source in [0, 1, 4] {
+            assert_eq!(world.source_box(source), None);
+        }
+        assert_eq!(
+            world.display_contents_mapping.get(&100),
+            Some(&vec![id(3), id(0)])
+        );
+        assert!(!world.display_contents_mapping.contains_key(&101));
+        assert!(!world.display_contents_mapping.contains_key(&102));
+        world.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn fully_reachable_compaction_keeps_storage_and_removes_empty_contents_mappings() {
+        let id = LayoutBoxId::from_index;
+        let mut world = detached_boxes(3);
+        world.replace_children(id(0), vec![id(2), id(1)]).unwrap();
+        world.map_display_contents_source(100, &[id(2), id(1)]);
+        world.map_display_contents_source(101, &[]);
+        world.boxes.shrink_to_fit();
+        let boxes = world.boxes.as_ptr();
+        let children = world.boxes[0].children.as_ptr();
+        let contents = world.display_contents_mapping[&100].as_ptr();
+
+        world.compact_reachable();
+
+        assert_eq!(world.boxes.as_ptr(), boxes);
+        assert_eq!(world.boxes[0].children.as_ptr(), children);
+        assert_eq!(world.display_contents_mapping[&100].as_ptr(), contents);
+        assert_eq!(world.root(), id(0));
+        assert_eq!(world.boxes[0].children, [id(2), id(1)]);
+        assert_eq!(world.display_contents_mapping[&100], [id(2), id(1)]);
+        assert!(!world.display_contents_mapping.contains_key(&101));
+        for source in 0..3 {
+            assert_eq!(world.source_box(source), Some(id(source)));
+        }
+        world.validate_invariants().unwrap();
     }
 }
