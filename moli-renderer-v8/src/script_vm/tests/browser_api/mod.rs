@@ -74,3 +74,5 @@ mod message_event_init;
 mod window_current_event_private;
 
 mod video_codec_support;
+
+mod cache_dense_arrays;
