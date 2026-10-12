@@ -192,6 +192,7 @@ interfaces! {
     Gamepad;
     GamepadButton;
     GamepadEvent: Event;
+    RTCDTMFToneChangeEvent: Event;
     PictureInPictureEvent: Event;
     PictureInPictureWindow: EventTarget;
     GamepadHapticActuator;
