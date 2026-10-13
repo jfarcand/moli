@@ -5,6 +5,7 @@ mod chromium;
 mod lifecycle;
 mod logical;
 mod sampling;
+mod synchronous_geometry;
 
 fn page_with_size_fixture(html: &str) -> anyhow::Result<PageVm> {
     let loader = crate::network::ResourceRequestClient::new(&FetchConfig::default())?;

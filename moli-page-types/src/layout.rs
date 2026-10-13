@@ -10,11 +10,22 @@ pub enum LayoutPolicy {
     /// Screenshots and screencasts publish layout; print projections are temporary.
     /// Geometry queries and input read the last published layout, if any.
     OnDemand,
+    /// `OnDemand`, except that a geometry query or input republishes layout
+    /// first when the DOM, style, viewport, or visual resources changed since
+    /// the last publication, as a Chromium synchronous layout flush does.
+    /// A page that is not mutated between reads still builds one layout.
+    Synchronous,
 }
 
 impl LayoutPolicy {
     pub const fn uses_real_layout(self) -> bool {
-        matches!(self, Self::OnDemand)
+        matches!(self, Self::OnDemand | Self::Synchronous)
+    }
+
+    /// Whether a geometry query or input must observe mutations made since
+    /// the last published layout.
+    pub const fn flushes_geometry_reads(self) -> bool {
+        matches!(self, Self::Synchronous)
     }
 }
 
@@ -41,5 +52,13 @@ mod tests {
         assert!(!LayoutPolicy::default().uses_real_layout());
         assert!(LayoutPolicy::OnDemand.uses_real_layout());
         assert!(!LayoutPolicy::Mock.uses_real_layout());
+        assert!(LayoutPolicy::Synchronous.uses_real_layout());
+    }
+
+    #[test]
+    fn only_synchronous_layout_flushes_geometry_reads() {
+        assert!(!LayoutPolicy::Mock.flushes_geometry_reads());
+        assert!(!LayoutPolicy::OnDemand.flushes_geometry_reads());
+        assert!(LayoutPolicy::Synchronous.flushes_geometry_reads());
     }
 }

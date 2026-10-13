@@ -99,6 +99,9 @@ fn apply_common_args(config: &mut AppConfig, common: &CommonArgs) -> Result<()> 
     if common.scrollbars && !common.layout {
         bail!("--scrollbars requires --layout or MOLI_LAYOUT=true");
     }
+    if common.sync_geometry && !common.layout {
+        bail!("--sync-geometry requires --layout or MOLI_LAYOUT=true");
+    }
 
     if let Some(log_level) = common.log_level {
         config.log_filter = log_level.as_tracing_filter().to_owned();
@@ -193,11 +196,13 @@ fn apply_common_args(config: &mut AppConfig, common: &CommonArgs) -> Result<()> 
     config
         .browser
         .set_subframe_loading_enabled(!common.disable_subframes);
-    config.browser.set_layout_policy(if common.layout {
-        LayoutPolicy::OnDemand
-    } else {
-        LayoutPolicy::Mock
-    });
+    config
+        .browser
+        .set_layout_policy(match (common.layout, common.sync_geometry) {
+            (true, true) => LayoutPolicy::Synchronous,
+            (true, false) => LayoutPolicy::OnDemand,
+            (false, _) => LayoutPolicy::Mock,
+        });
     config
         .browser
         .set_scrollbars_hidden(common.layout && !common.scrollbars);

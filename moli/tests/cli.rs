@@ -142,6 +142,7 @@ fn parses_explicit_fetch_command_with_compatibility_flags() {
                 resource: false,
                 disable_subframes: false,
                 layout: false,
+                sync_geometry: false,
                 scrollbars: false,
                 cookie_file: Vec::new(),
                 document_start_script: Vec::new(),
@@ -1706,6 +1707,36 @@ fn layout_selects_on_demand_policy_for_fetch_and_serve() {
         assert_eq!(
             config.browser.layout_policy(),
             moli_core::LayoutPolicy::OnDemand
+        );
+    }
+}
+
+#[test]
+fn sync_geometry_selects_synchronous_policy_and_requires_layout() {
+    for args in [
+        vec![
+            "moli",
+            "fetch",
+            "--layout",
+            "--sync-geometry",
+            "https://example.com",
+        ],
+        vec!["moli", "serve", "--layout", "--sync-geometry"],
+    ] {
+        let cli = Cli::try_parse_from(normalize_args_for_compat(args)).unwrap();
+        let config = AppConfig::from_cli(&cli).unwrap();
+        assert_eq!(
+            config.browser.layout_policy(),
+            moli_core::LayoutPolicy::Synchronous
+        );
+    }
+    for args in [
+        vec!["moli", "fetch", "--sync-geometry", "https://example.com"],
+        vec!["moli", "serve", "--sync-geometry"],
+    ] {
+        assert!(
+            Cli::try_parse_from(normalize_args_for_compat(args.clone())).is_err(),
+            "{args:?} must require --layout"
         );
     }
 }

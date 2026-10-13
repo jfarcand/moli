@@ -5,7 +5,7 @@ use moli_layout::{
 };
 
 use super::JsContextHost;
-use super::layout_state::InferredFrameStyleViewportCacheKey;
+use super::layout_state::{InferredFrameStyleViewportCacheKey, PublishedLayoutInputs};
 use crate::{
     css_resource_urls::{CompletedStylesheetWebFont, StylesheetLoadBlockingResource},
     document_runtime::DomHandle,
@@ -245,8 +245,11 @@ impl JsContextHost {
 
     /// Lazily publishes the first screen layout for this main Document.
     ///
-    /// Every consumer shares the same recursive tree. Missing nodes or newly
-    /// navigated frames in an existing tree must not refresh the whole page.
+    /// Every consumer shares the same recursive tree. Under
+    /// `LayoutPolicy::OnDemand`, missing nodes or newly navigated frames in an
+    /// existing tree must not refresh the whole page. Under
+    /// `LayoutPolicy::Synchronous`, a tree whose recorded inputs no longer
+    /// match the Document is republished, as a synchronous layout flush.
     pub(crate) fn ensure_initial_layout(&self) -> Result<(), LayoutError> {
         if !self.layout_policy.uses_real_layout() {
             return Ok(());
@@ -255,13 +258,19 @@ impl JsContextHost {
             return Err(LayoutError::ReentrantLayoutPass);
         }
         let document = self.document_handle();
-        if self
-            .document_layout_state
-            .borrow()
-            .latest_layout(document)
-            .is_some()
+        let current_inputs = self
+            .layout_policy
+            .flushes_geometry_reads()
+            .then(|| self.current_layout_inputs(document));
         {
-            return Ok(());
+            let state = self.document_layout_state.borrow();
+            if state.latest_layout(document).is_some()
+                && current_inputs
+                    .as_ref()
+                    .is_none_or(|inputs| state.latest_layout_inputs() == Some(inputs))
+            {
+                return Ok(());
+            }
         }
         let request = LayoutPassRequest::new(
             self.layout_viewport_for_document(document),
@@ -394,6 +403,33 @@ impl JsContextHost {
         self.last_layout_pass_metrics.set(Some(metrics));
         self.layout_snapshot_cache_publishes
             .set(self.layout_snapshot_cache_publishes.get().saturating_add(1));
+        if document == self.document_handle() {
+            // Recorded after publication, so generation changes the pass and
+            // its frame-viewport feedback make are part of what it matches.
+            // The viewport is the pass's own: an output publication may lay
+            // out at a viewport other than the one geometry reads use.
+            let inputs = self.layout_inputs_at(pass_viewport);
+            self.document_layout_state
+                .borrow_mut()
+                .record_latest_layout_inputs(inputs);
+        }
+    }
+
+    /// The inputs a layout of `document` built now would be built from.
+    fn current_layout_inputs(&self, document: DomHandle) -> PublishedLayoutInputs {
+        self.layout_inputs_at(self.layout_viewport_for_document(document))
+    }
+
+    fn layout_inputs_at(&self, viewport: LayoutViewport) -> PublishedLayoutInputs {
+        PublishedLayoutInputs {
+            dom_version: self.dom_host().dom_version(),
+            style_generations: self
+                .style_engine
+                .computed_style_observation_generations(self.active_layout_document_handles()),
+            visual_state_generation: self.visual_state_generation(),
+            visual_resource_generation: self.visual_resource_generation(),
+            viewport,
+        }
     }
 
     pub(crate) fn answer_layout_for_document(

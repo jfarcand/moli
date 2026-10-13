@@ -267,6 +267,7 @@ enabled by default:
 | --- | --- |
 | Default | `LayoutPolicy::Mock` — deterministic geometry in a compatible format, with no real layout or paint |
 | `--layout` | `LayoutPolicy::OnDemand` — real layout, geometry, hit-testing, coordinate input, screenshots, screencast |
+| `--layout --sync-geometry` | `LayoutPolicy::Synchronous` — as `--layout`, but a geometry read or input after a DOM, style, or viewport change re-runs layout first, as Chromium's synchronous layout does |
 | `--resource` | Fetch all optional visual/media resource families |
 | `--image`, `--font`, `--audio`, `--video`, `--media`, `--text-track` | Enable one specific optional resource family |
 | `--profile-dir`, `--http-cache-dir`, `--cookie-file` | Selectively enable the persistence required by the workload |
@@ -275,7 +276,9 @@ Layout is an on-demand snapshot rather than continuously maintained state. The
 first geometry request (a cold start) builds a working layout tree from the
 current DOM/style, freezes its canonical geometry into an immutable,
 DOM-independent `FrozenLayoutTree`, and retains only that latest tree. Ordinary
-geometry reads may reuse it even if the page has changed. Screenshots always
+geometry reads may reuse it even if the page has changed; with `--sync-geometry`
+they rebuild it first whenever the DOM, style, or viewport changed since it was
+frozen, and reuse it otherwise. Screenshots always
 rebuild and replace the frozen tree. Each screencast subscription remembers
 only an opaque visual-state token: an unchanged token suppresses the poll,
 while a changed token triggers one fresh frame. Paint results are never reused.

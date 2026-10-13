@@ -18,6 +18,20 @@ pub(super) struct InferredFrameStyleViewportCacheKey {
     pub(super) environment: StyloStyleEnvironment,
 }
 
+/// The layout inputs a published snapshot was built from.
+///
+/// `LayoutPolicy::Synchronous` compares it with the current inputs before a
+/// geometry read; the counters are the ones a screencast visual-state token
+/// already compares, so a mutation that would repaint also re-lays out.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct PublishedLayoutInputs {
+    pub(super) dom_version: u64,
+    pub(super) style_generations: Vec<(DomHandle, u64, u64, u64)>,
+    pub(super) visual_state_generation: u64,
+    pub(super) visual_resource_generation: u64,
+    pub(super) viewport: LayoutViewport,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct CachedInferredFrameStyleViewport {
     key: InferredFrameStyleViewportCacheKey,
@@ -43,6 +57,8 @@ pub(super) struct DocumentLayoutState {
     web_font_resource_generation: Option<StylesheetResourceGeneration>,
     visual_state_generation: u64,
     latest_layout: LatestLayoutTreeCache,
+    /// Inputs of the main Document's latest published layout.
+    latest_layout_inputs: Option<PublishedLayoutInputs>,
     /// Last used content viewport published by each live iframe owner's
     /// parent layout. Blink keeps the equivalent size on LocalFrameView; it is
     /// separate from the single latest-tree slot because a later fresh layout
@@ -145,7 +161,16 @@ impl DocumentLayoutState {
 
     pub(super) fn clear_latest_layout(&mut self) {
         self.latest_layout.clear();
+        self.latest_layout_inputs = None;
         self.mark_visual_state_dirty();
+    }
+
+    pub(super) fn latest_layout_inputs(&self) -> Option<&PublishedLayoutInputs> {
+        self.latest_layout_inputs.as_ref()
+    }
+
+    pub(super) fn record_latest_layout_inputs(&mut self, inputs: PublishedLayoutInputs) {
+        self.latest_layout_inputs = Some(inputs);
     }
 
     pub(super) fn frame_viewport(&self, frame: DomHandle) -> Option<LayoutViewport> {

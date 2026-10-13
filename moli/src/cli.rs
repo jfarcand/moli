@@ -586,7 +586,8 @@ pub struct CommonArgs {
     /// Enable the real on-demand layout renderer and screenshot surfaces.
     /// Native scrollbars are hidden unless --scrollbars or MOLI_SCROLLBARS is enabled.
     /// With `fetch --eval` or `--eval-file`, refresh layout once before running
-    /// the script so geometry APIs can read it. Script mutations do not refresh it.
+    /// the script so geometry APIs can read it. Script mutations do not refresh
+    /// it unless --sync-geometry is enabled.
     ///
     /// Without this flag Moli keeps deterministic compatibility
     /// geometry and does not construct layout or paint output.
@@ -597,6 +598,19 @@ pub struct CommonArgs {
         value_parser = clap::builder::BoolishValueParser::new()
     )]
     pub layout: bool,
+
+    /// Refresh layout before a geometry query or input when the DOM, style, or
+    /// viewport changed since it was last built, so `getBoundingClientRect()`,
+    /// `offsetWidth`, hit testing, and coordinate input observe script
+    /// mutations as in Chromium. Each such read after a mutation costs one
+    /// layout pass. Requires --layout.
+    #[arg(
+        long,
+        env = "MOLI_SYNC_GEOMETRY",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        requires_if("true", "layout")
+    )]
+    pub sync_geometry: bool,
 
     /// Show native scrollbars. Requires --layout.
     #[arg(
