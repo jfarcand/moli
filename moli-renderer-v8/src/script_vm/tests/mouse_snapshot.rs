@@ -371,3 +371,63 @@ fn dom_mutations_preserve_scroll_without_refreshing_layout() {
         }
     }
 }
+
+/// A synchronous-layout page whose hover state has settled under the pointer.
+///
+/// A hover change is a layout input (a `:hover` rule may change geometry), so
+/// the read after one lays out again; settling it first isolates the effect
+/// under test.
+fn settled_synchronous_layout_vm(markup: &str) -> StandaloneScriptVmHarness {
+    let mut vm = new_parsed_test_vm("https://mouse-snapshot.test/", markup);
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::Synchronous);
+    for _ in 0..2 {
+        mouse(&mut vm, "mousemove").unwrap();
+    }
+    vm
+}
+
+#[test]
+fn synchronous_layout_mouse_input_reuses_layout_while_nothing_changes() {
+    let mut vm = settled_synchronous_layout_vm(
+        "<!doctype html><button id=target style='position:absolute;left:20px;top:20px;width:100px;height:100px'>go</button>",
+    );
+    let before = vm.layout_pass_observability_for_test().1;
+    for _ in 0..3 {
+        mouse(&mut vm, "mousemove").unwrap();
+    }
+    assert_eq!(
+        vm.eval("String(target.getBoundingClientRect().left)")
+            .unwrap(),
+        "20"
+    );
+    assert_eq!(vm.layout_pass_observability_for_test().1, before);
+}
+
+#[test]
+fn synchronous_layout_mouse_input_hit_tests_the_mutated_page() {
+    let mut vm = settled_synchronous_layout_vm(
+        r#"<!doctype html><style>body{min-height:100px}</style>
+        <button id=target style='position:absolute;left:20px;top:20px;width:100px;height:100px'>go</button>"#,
+    );
+    vm.eval(
+        "window.hits=[];document.onmousemove=e=>hits.push(e.target.id);target.style.left='300px'",
+    )
+    .unwrap();
+    let before = vm.layout_pass_observability_for_test().1;
+    // The button moved away from (60, 60) after the last publication.
+    mouse(&mut vm, "mousemove").unwrap();
+    assert_eq!(vm.eval("JSON.stringify(hits)").unwrap(), r#"[""]"#);
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 1);
+}
+
+#[test]
+fn synchronous_layout_mouse_handler_geometry_reads_observe_its_own_mutation() {
+    let mut vm = settled_synchronous_layout_vm(
+        "<!doctype html><button id=target style='position:absolute;left:20px;top:20px;width:100px;height:100px'>go</button>",
+    );
+    vm.eval("target.onmousemove=()=>{target.style.left='300px';window.observedLeft=target.getBoundingClientRect().left}").unwrap();
+    let before = vm.layout_pass_observability_for_test().1;
+    mouse(&mut vm, "mousemove").unwrap();
+    assert_eq!(vm.eval("String(observedLeft)").unwrap(), "300");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 1);
+}

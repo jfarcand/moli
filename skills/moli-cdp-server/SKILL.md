@@ -32,8 +32,11 @@ Preserve the client's existing API where Moli supports it.
 2. Start `moli serve` on the default loopback endpoint
    `http://127.0.0.1:9222`.
 3. Add `--layout` when the workflow needs real element geometry, coordinate
-   input, screenshots, PDFs, or screencasts. Add `--resource` only when all
-   optional visual/media resources are required.
+   input, screenshots, PDFs, or screencasts. Also add `--sync-geometry` when
+   the client measures or clicks elements that appear or move after the page
+   loads, such as visibility checks before a click or a multi-step login form;
+   without it, geometry and input keep reading the last built layout. Add
+   `--resource` only when all optional visual/media resources are required.
 4. Probe `/json/version` before connecting the client.
 5. Connect with the client's remote/attach API; do not launch a second bundled
    browser.
